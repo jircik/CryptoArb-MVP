@@ -1,22 +1,24 @@
 import WebSocket from 'ws';
 
-// URL do stream público da Binance
-const WS_URL = 'wss://stream.binance.com:9443/ws/btcusdt@ticker';
+// Combined stream: múltiplos pares numa única conexão
+const PAIRS = ['btcusdt', 'ethusdt', 'bnbusdt'];
+const streams = PAIRS.map(p => `${p}@ticker`).join('/');
+const WS_URL = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
-console.log('Connecting to Binance WebSocket...');
+console.log(`Connected - monitoring: ${PAIRS.map(p => p.toUpperCase()).join(', ')}\n`);
 
 const ws = new WebSocket(WS_URL);
 
 ws.on('open', () => {
-    console.log('Connected! Waiting for prices...\n');
+    console.log('Connected! Waiting prices...\n');
 });
 
 ws.on('message', (data: Buffer) => {
-    const msg = JSON.parse(data.toString());
+    // Combined stream envolve os dados em { stream, data }
+    const envelope = JSON.parse(data.toString());
+    const msg = envelope.data;
 
-    // msg.c = preço atual (last price)
-    // msg.P = variação % nas últimas 24h
-    // msg.v = volume nas últimas 24h
+    const symbol   = (msg.s as string).replace('USDT', '/USDT');
     const price    = parseFloat(msg.c);
     const change   = parseFloat(msg.P);
     const volume   = parseFloat(msg.v);
@@ -26,14 +28,15 @@ ws.on('message', (data: Buffer) => {
     const sign      = change >= 0 ? '+' : '';
 
     console.log(
-        `[${time}] BTC/USDT  $${price.toLocaleString('en-US', { minimumFractionDigits: 2 })}  ` +
-        `${direction} ${sign}${change.toFixed(2)}%  ` +
-        `Vol: ${volume.toFixed(2)} BTC`
+        `[${time}] ${symbol.padEnd(10)} ` +
+        `$${price.toLocaleString('en-US', { minimumFractionDigits: 2 }).padStart(12)}  ` +
+        `${direction} ${sign}${change.toFixed(2).padStart(6)}%  ` +
+        `Vol: ${volume.toFixed(2)}`
     );
 });
 
 ws.on('error', (err: Error) => {
-    console.error('WebSocket Error:', err.message);
+    console.error('WebSocket error:', err.message);
 });
 
 ws.on('close', () => {
