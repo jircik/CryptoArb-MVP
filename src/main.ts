@@ -1,44 +1,28 @@
-import WebSocket from 'ws';
+import { connectBinance } from './exchanges/binance'
+import { connectKraken } from './exchanges/kraken'
+import { updatePrice } from './priceCache'
+import { checkArbitrage } from './detector'
+import { Price } from './types'
 
-// Combined stream: múltiplos pares numa única conexão
-const PAIRS = ['btcusdt', 'ethusdt', 'bnbusdt'];
-const streams = PAIRS.map(p => `${p}@ticker`).join('/');
-const WS_URL = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+console.log('🚀 CryptoArb MVP 2 — Multi-Exchange Monitor\n')
 
-console.log(`Connected - monitoring: ${PAIRS.map(p => p.toUpperCase()).join(', ')}\n`);
+// Handler compartilhado: chega novo preço → atualiza cache → checa spread
+function onPrice(price: Price): void {
+    const time = new Date().toLocaleTimeString('pt-BR')
 
-const ws = new WebSocket(WS_URL);
-
-ws.on('open', () => {
-    console.log('Connected! Waiting prices...\n');
-});
-
-ws.on('message', (data: Buffer) => {
-    // Combined stream envolve os dados em { stream, data }
-    const envelope = JSON.parse(data.toString());
-    const msg = envelope.data;
-
-    const symbol   = (msg.s as string).replace('USDT', '/USDT');
-    const price    = parseFloat(msg.c);
-    const change   = parseFloat(msg.P);
-    const volume   = parseFloat(msg.v);
-    const time     = new Date().toLocaleTimeString('pt-BR');
-
-    const direction = change >= 0 ? '▲' : '▼';
-    const sign      = change >= 0 ? '+' : '';
-
+    // Loga o preço recebido
     console.log(
-        `[${time}] ${symbol.padEnd(10)} ` +
-        `$${price.toLocaleString('en-US', { minimumFractionDigits: 2 }).padStart(12)}  ` +
-        `${direction} ${sign}${change.toFixed(2).padStart(6)}%  ` +
-        `Vol: ${volume.toFixed(2)}`
-    );
-});
+        `[${time}] ${price.exchange.padEnd(8)} ${price.symbol.padEnd(10)} ` +
+        `$${price.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+    )
 
-ws.on('error', (err: Error) => {
-    console.error('WebSocket error:', err.message);
-});
+    // Atualiza cache
+    updatePrice(price)
 
-ws.on('close', () => {
-    console.log('Connection closed.');
-});
+    // Verifica se há oportunidade de arbitragem
+    checkArbitrage(price.symbol)
+}
+
+// Conecta as duas exchanges com o mesmo handler
+connectBinance(onPrice)
+connectKraken(onPrice)
