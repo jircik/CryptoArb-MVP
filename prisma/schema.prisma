@@ -1,0 +1,20 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Opportunity {
+  id           Int      @id @default(autoincrement())
+  symbol       String
+  buyExchange  String
+  buyPrice     Float
+  sellExchange String
+  sellPrice    Float
+  spread       Float
+  profit       Float
+  detectedAt   DateTime @default(now())
+}
