@@ -17,7 +17,9 @@ function onPrice(price: Price): void {
     )
 
     updatePrice(price)
-    checkArbitrage(price.symbol)
+
+    // fire-and-forget: não espera o resultado para não bloquear o próximo tick
+    checkArbitrage(price.symbol).catch(console.error)
 }
 
 connectBinance(onPrice)
