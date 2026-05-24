@@ -1,6 +1,7 @@
 import { getPrices } from './priceCache'
 import { saveOpportunity } from './db'
 import { sendOpportunityEmail } from './mailer'
+import { sendWhatsAppNotification } from './whatsapp'
 
 const SPREAD_THRESHOLD = parseFloat(process.env.SPREAD_THRESHOLD ?? '0.5')
 
@@ -53,5 +54,6 @@ export async function checkArbitrage(symbol: string): Promise<void> {
     await Promise.all([
         saveOpportunity(opportunityData),
         sendOpportunityEmail(opportunityData),
+        sendWhatsAppNotification(opportunityData),
     ])
 }
