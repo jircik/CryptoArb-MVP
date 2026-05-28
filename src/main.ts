@@ -1,26 +1,32 @@
 import 'dotenv/config'
-
 import { connectBinance } from './exchanges/binance'
 import { connectKraken } from './exchanges/kraken'
 import { updatePrice } from './priceCache'
 import { checkArbitrage } from './detector'
+import { startServer } from './api/server'
+import { broadcastPrice } from './api/ws/feed'
 import { Price } from './types'
 
-console.log('CryptoArb MVP — Persistence + Notifications\n')
+async function main() {
+    // Start API server first
+    await startServer()
 
-function onPrice(price: Price): void {
-    const time = new Date().toLocaleTimeString('pt-BR')
+    // Price handler — same as before, now also broadcasts to WS clients
+    function onPrice(price: Price): void {
+        const time = new Date().toLocaleTimeString('pt-BR')
 
-    console.log(
-        `[${time}] ${price.exchange.padEnd(8)} ${price.symbol.padEnd(10)} ` +
-        `$${price.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
-    )
+        console.log(
+            `[${time}] ${price.exchange.padEnd(8)} ${price.symbol.padEnd(10)} ` +
+            `$${price.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+        )
 
-    updatePrice(price)
+        updatePrice(price)
+        broadcastPrice(price)
+        checkArbitrage(price.symbol).catch(console.error)
+    }
 
-    // fire-and-forget: não espera o resultado para não bloquear o próximo tick
-    checkArbitrage(price.symbol).catch(console.error)
+    connectBinance(onPrice)
+    connectKraken(onPrice)
 }
 
-connectBinance(onPrice)
-connectKraken(onPrice)
+main().catch(console.error)
