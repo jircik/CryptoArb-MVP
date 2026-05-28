@@ -1,21 +1,20 @@
 # CryptoArb
 
-Real-time cryptocurrency arbitrage detector across multiple exchanges.
+Real-time cryptocurrency arbitrage detector across multiple exchanges, with a live REST + WebSocket API.
 
-Connects simultaneously to Binance and Kraken, compares prices in real time, persists every detected opportunity to SQLite, and notifies you via **Gmail** and **WhatsApp** when a profitable spread is detected — no exchange API key, no account, no paid service.
+Connects simultaneously to Binance and Kraken, compares prices in real time, persists every detected opportunity to SQLite, notifies via Gmail and WhatsApp, and exposes a Fastify API for the dashboard to consume.
 
 ## Demo
 
 ```
-CryptoArb MVP — Persistence + Notifications
+🌐 API running at http://localhost:3001
+📡 WebSocket feed at ws://localhost:3001/api/feed
 
-[Binance] Connected
-[Kraken]  Connected
+[Binance] ✅ Connected
+[Kraken]  ✅ Connected
 
 [14:23:01] binance   BTCUSDT    $67,432.10
 [14:23:01] kraken    BTCUSDT    $67,500.00
-[14:23:02] binance   ETHUSDT     $3,521.44
-[14:23:02] kraken    ETHUSDT     $3,519.80
 
 ═══════════════════════════════════════════════════════
 🚨 OPPORTUNITY DETECTED  [14:23:05]
@@ -33,18 +32,19 @@ CryptoArb MVP — Persistence + Notifications
 ## Stack
 
 - **Node.js 20+** + **TypeScript**
-- **ws** — WebSocket client
-- **tsx** — TypeScript execution for development
+- **ws** — WebSocket client for exchange streams
+- **Fastify** — REST API and WebSocket feed server
+- **@fastify/cors** + **@fastify/websocket** — Fastify plugins
 - **Prisma 7** + **SQLite** — opportunity persistence
 - **Nodemailer** — Gmail SMTP notifications
 - **Evolution API** — WhatsApp notifications (self-hosted)
-- **dotenv** — environment configuration
+- **dotenv** + **pino-pretty** — configuration and logging
 - **Binance Public WebSocket Streams** — no authentication required
 - **Kraken Public WebSocket v2** — no authentication required
 
 ## How it works
 
-Each exchange has its own data format. CryptoArb normalizes both into a common `Price` type, stores the latest price per exchange in memory, and checks the spread on every new tick. When the spread crosses the configured threshold, the opportunity is persisted to SQLite and both notifications (email + WhatsApp) fire in parallel — they don't block the next price tick.
+Each exchange has its own data format. CryptoArb normalizes both into a common `Price` type, stores the latest price per exchange in memory, and checks the spread on every tick. When the spread crosses the configured threshold, the opportunity is persisted, broadcast to all connected dashboard clients, and notifications fire (subject to a 5-minute per-symbol cooldown).
 
 ```
 Binance WS ──→ binance adapter ──→ Price { exchange, symbol, price }
@@ -53,9 +53,28 @@ Kraken WS  ──→ kraken adapter  ──→  price cache (Map)
                                         ↓
                                     spread detector
                                         ↓
-                    ┌───────────────────┼───────────────────┐
-                    ↓                   ↓                   ↓
-             SQLite (Prisma)   Gmail (Nodemailer)   WhatsApp (Evolution API)
+              ┌─────────────────────────┼──────────────────────┐
+              ↓                         ↓                      ↓
+       SQLite (Prisma)         WS feed broadcast     email + WhatsApp
+                                                     (5min cooldown)
+```
+
+## API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/api/prices` | Current price snapshot across all exchanges |
+| `GET` | `/api/opportunities` | Opportunity history (supports `?limit=20&symbol=BTCUSDT`) |
+| `GET` | `/api/opportunities/:id` | Single opportunity detail |
+| `WS` | `/api/feed` | Live stream of price updates and detections |
+
+### WebSocket feed message types
+
+```json
+{ "type": "connected", "message": "Connected to CryptoArb live feed" }
+{ "type": "price", "data": { "symbol": "BTCUSDT", "exchange": "binance", "price": 76595.98 } }
+{ "type": "opportunity", "data": { "symbol": "BTCUSDT", "spread": 0.712, "buyExchange": "binance", ... } }
 ```
 
 ## Getting Started
@@ -86,19 +105,24 @@ All runtime configuration lives in `.env` (see `.env.example`):
 # Database
 DATABASE_URL="file:./dev.db"
 
-# Gmail (optional — app silently skips if missing)
+# API server
+API_PORT=3001
+API_HOST=0.0.0.0
+CORS_ORIGIN=http://localhost:3000
+
+# Spread threshold (0.5 = 0.5%)
+SPREAD_THRESHOLD=0.5
+
+# Gmail (optional — skipped silently if missing)
 GMAIL_USER=your-email@gmail.com
 GMAIL_APP_PASSWORD=your16charapppassword
 NOTIFICATION_EMAIL=your-email@gmail.com
 
-# WhatsApp via Evolution API (optional — app silently skips if missing)
+# WhatsApp via Evolution API (optional — skipped silently if missing)
 EVOLUTION_URL=http://localhost:8088
 EVOLUTION_API_KEY=your-evolution-api-key
 EVOLUTION_INSTANCE=cryptoArb
 WHATSAPP_NUMBER=5500000000000
-
-# Spread threshold (0.5 = 0.5%)
-SPREAD_THRESHOLD=0.5
 ```
 
 Trading pairs are configured per adapter:
@@ -115,9 +139,7 @@ Gmail blocks regular passwords over SMTP. Generate an App Password at
 
 ### WhatsApp via Evolution API
 
-CryptoArb sends WhatsApp notifications through a self-hosted [Evolution API](https://github.com/EvolutionAPI/evolution-api) instance. See [`evolutionAPI/`](./evolutionAPI/) for the Docker Compose setup.
-
-Once your instance is running and connected, set `EVOLUTION_URL`, `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE`, and `WHATSAPP_NUMBER` in `.env`. If any of these are missing, WhatsApp notifications are silently skipped and the app keeps running normally.
+CryptoArb sends WhatsApp notifications through a self-hosted [Evolution API](https://github.com/EvolutionAPI/evolution-api) instance. See [`evolutionAPI/`](./evolutionAPI/) for the Docker Compose setup. If any of the `EVOLUTION_*` env vars are missing, WhatsApp notifications are silently skipped.
 
 ### Inspecting the database
 
@@ -129,26 +151,33 @@ npx prisma studio    # opens a web UI at localhost:5555
 
 ```
 src/
+├── api/
+│   ├── routes/
+│   │   ├── opportunities.ts    # GET /api/opportunities
+│   │   └── prices.ts           # GET /api/prices
+│   ├── ws/
+│   │   └── feed.ts             # WebSocket broadcaster
+│   └── server.ts               # Fastify setup
 ├── exchanges/
-│   ├── binance.ts          # Binance WebSocket adapter
-│   └── kraken.ts           # Kraken WebSocket adapter
-├── generated/prisma/       # Prisma Client (generated, gitignored)
-├── types.ts                # Shared Price type
-├── priceCache.ts           # In-memory price store
-├── detector.ts             # Spread detection + persistence + notifications
-├── db.ts                   # Prisma client + saveOpportunity
-├── mailer.ts               # Gmail SMTP transport
-├── whatsapp.ts             # Evolution API WhatsApp client
-└── main.ts                 # Entry point
+│   ├── binance.ts              # Binance WebSocket adapter
+│   └── kraken.ts               # Kraken WebSocket adapter
+├── generated/prisma/           # Prisma Client (generated, gitignored)
+├── types.ts                    # Shared Price type
+├── priceCache.ts               # In-memory price store
+├── detector.ts                 # Spread detection + cooldown + notifications
+├── db.ts                       # Prisma client + DB queries
+├── mailer.ts                   # Gmail SMTP transport
+├── whatsapp.ts                 # Evolution API WhatsApp client
+└── main.ts                     # Entry point
 
 prisma/
-├── schema.prisma           # Opportunity model
-└── migrations/             # SQL migration history
+├── schema.prisma               # Opportunity model
+└── migrations/                 # SQL migration history
 
-evolutionAPI/               # Self-hosted WhatsApp gateway
-├── docker-compose.yaml     # Evolution API stack
-├── nginx.conf              # Manager frontend config
-└── .env.example            # Environment template
+evolutionAPI/                   # Self-hosted WhatsApp gateway
+├── docker-compose.yaml
+├── nginx.conf
+└── .env.example
 ```
 
 ## Roadmap
@@ -156,7 +185,8 @@ evolutionAPI/               # Self-hosted WhatsApp gateway
 - [x] **MVP 1** — Connect to Binance WebSocket and log prices to console
 - [x] **MVP 2** — Add Kraken, compare prices in real time, alert on favorable spread
 - [x] **MVP 3** — Persist to SQLite, Gmail + WhatsApp notifications via Evolution API
-- [ ] **MVP 4** — Per-symbol notification cooldown, REST API (Fastify), Next.js dashboard, deploy to Railway
+- [x] **MVP 4** — Fastify REST API + WebSocket feed + notification cooldown
+- [ ] **MVP 5** — Next.js dashboard consuming the live API
 
 ## License
 
