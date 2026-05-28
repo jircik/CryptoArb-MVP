@@ -6,9 +6,22 @@ import { broadcastOpportunity } from './api/ws/feed'
 
 const SPREAD_THRESHOLD = parseFloat(process.env.SPREAD_THRESHOLD ?? '0.5')
 
+// Cooldown tracking
+const lastNotified = new Map<string, number>()
+const COOLDOWN_MS = 5 * 60 * 1000 // 5 minutes
+
+function isOnCooldown(symbol: string): boolean {
+    const last = lastNotified.get(symbol)
+    if (!last) return false
+    return Date.now() - last < COOLDOWN_MS
+}
+
+function markNotified(symbol: string): void {
+    lastNotified.set(symbol, Date.now())
+}
+
 export async function checkArbitrage(symbol: string): Promise<void> {
     const prices = getPrices(symbol)
-
     if (!prices || prices.size < 2) return
 
     const entries = Array.from(prices.entries())
@@ -24,15 +37,13 @@ export async function checkArbitrage(symbol: string): Promise<void> {
     }
 
     const spread = ((sellPrice - buyPrice) / buyPrice) * 100
-
     if (spread < SPREAD_THRESHOLD) return
 
     const profit = sellPrice - buyPrice
     const time = new Date().toLocaleTimeString('pt-BR')
 
-    // Log no console (igual ao MVP 2)
     console.log('\n' + '═'.repeat(55))
-    console.log(`🚨 OPPORTUNITY DETECTED  [${time}]`)
+    console.log(`OPPORTUNITY DETECTED  [${time}]`)
     console.log('═'.repeat(55))
     console.log(`   Pair:      ${symbol}`)
     console.log(`   Spread:    ${spread.toFixed(3)}%`)
@@ -51,11 +62,20 @@ export async function checkArbitrage(symbol: string): Promise<void> {
         profit,
     }
 
-    // Persiste e notifica em paralelo (não bloqueia o próximo tick)
+    // Always persist and broadcast
     await Promise.all([
         saveOpportunity(opportunityData),
-        sendOpportunityEmail(opportunityData),
-        sendWhatsAppNotification(opportunityData),
         Promise.resolve(broadcastOpportunity(opportunityData)),
     ])
+
+    // Only notify via email + WhatsApp if not on cooldown
+    if (!isOnCooldown(symbol)) {
+        markNotified(symbol)
+        await Promise.all([
+            sendOpportunityEmail(opportunityData),
+            sendWhatsAppNotification(opportunityData),
+        ])
+    } else {
+        console.log(`[Detector] ${symbol} on cooldown — skipping notifications`)
+    }
 }
