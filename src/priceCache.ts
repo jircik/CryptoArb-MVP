@@ -22,3 +22,16 @@ export function getPrices(symbol: string): Map<string, number> | undefined {
 export function getSymbols(): string[] {
     return Array.from(cache.keys())
 }
+
+// Returns a snapshot of all current prices for all symbols and exchanges
+export function getAllPrices(): Array<{ symbol: string; exchange: string; price: number }> {
+    const result: Array<{ symbol: string; exchange: string; price: number }> = []
+
+    for (const [symbol, exchanges] of cache.entries()) {
+        for (const [exchange, price] of exchanges.entries()) {
+            result.push({ symbol, exchange, price })
+        }
+    }
+
+    return result
+}
